@@ -35,8 +35,13 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           p = Path("src/interview_automation/script_generation.py")
-          lines = p.read_text(encoding="utf-8").splitlines()
-          for i in range(58, 67):
+          source = p.read_text(encoding="utf-8")
+          if "script = normalize_script(_extract_json(raw), topic, count)" in source:
+              raise SystemExit("Legacy script generator was checked out. Start a new workflow run from main; do not rerun an old job.")
+          if "build_question_batch_prompt" not in source:
+              raise SystemExit("Validated Qwen batch generator is missing. Start a new workflow run from main.")
+          lines = source.splitlines()
+          for i in range(114, 121):
               print(f"{i + 1}: {lines[i]}")
           PY
       - uses: actions/setup-python@v5
