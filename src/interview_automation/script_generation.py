@@ -56,11 +56,39 @@ Requirements:
 def _extract_json(text: str) -> dict[str, Any]:
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
     candidate = match.group(1) if match else text
-    start = candidate.find("{")
-    end = candidate.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    json_text = _find_balanced_json_object(candidate)
+    if not json_text:
         raise ValueError("Qwen did not return a JSON object.")
-    return json.loads(candidate[start : end + 1])
+    return json.loads(json_text)
+
+
+def _find_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 def _call_generator(generator: Callable[..., Any], prompt: str) -> str:
@@ -80,6 +108,22 @@ def _call_generator(generator: Callable[..., Any], prompt: str) -> str:
             return str(first.get("generated_text", ""))
         return str(first)
     raise ValueError("Qwen generator returned an unsupported response.")
+
+
+def build_repair_prompt(topic: str, count: int, raw: str, error: Exception) -> str:
+    return f"""
+The previous response was meant to be strict JSON for a YouTube interview-preparation video, but it failed to parse.
+
+Topic: {topic}
+Question count: {count}
+JSON error: {error}
+
+Fix the response below into valid JSON only. Do not add markdown, comments, explanations, or extra text.
+Preserve the original meaning, keep exactly {count} questions, and keep exactly {count + 2} narration segments.
+
+Broken response:
+{raw}
+""".strip()
 
 
 def normalize_script(script: dict[str, Any], topic: str, count: int) -> dict[str, Any]:
@@ -112,7 +156,19 @@ def generate_script(
     if generator is None:
         raise RuntimeError("Script generation requires the local Qwen2.5-1.5B-Instruct generator.")
     prompt = build_script_prompt(topic, count)
-    raw = _call_generator(generator, prompt)
-    script = normalize_script(_extract_json(raw), topic, count)
-    write_json(out_path, script)
-    return script
+    errors: list[str] = []
+    raw = ""
+    for attempt in range(1, 4):
+        raw = _call_generator(generator, prompt)
+        raw_path = out_path.with_name(f"{out_path.stem}.raw_attempt_{attempt}.txt")
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(raw, encoding="utf-8")
+        try:
+            script = normalize_script(_extract_json(raw), topic, count)
+            write_json(out_path, script)
+            return script
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"attempt {attempt}: {exc}")
+            prompt = build_repair_prompt(topic, count, raw, exc)
+
+    raise ValueError("Qwen failed to produce valid script JSON. " + " | ".join(errors))

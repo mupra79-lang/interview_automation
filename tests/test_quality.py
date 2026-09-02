@@ -25,3 +25,18 @@ def test_fake_company_claims_are_rejected(tmp_path) -> None:
     script["questions"][0]["answer"] += " This exact interview question was asked by Google."
     with pytest.raises(ValueError):
         validate_script(script, tmp_path / "history.json", tmp_path / "report.json")
+
+
+def test_malformed_qwen_json_is_repaired_by_retry(tmp_path) -> None:
+    calls = {"count": 0}
+
+    def flaky_generator(prompt: str, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return [{"generated_text": '{"title": "Broken" "questions": []}'}]
+        return fake_qwen_generator(prompt, **kwargs)
+
+    script = generate_script("Top 10 LangGraph Interview Questions", 10, tmp_path / "script.json", flaky_generator)
+    assert script["title"] == "Top 10 LangGraph Interview Questions"
+    assert calls["count"] == 2
+    assert (tmp_path / "script.raw_attempt_1.txt").exists()
