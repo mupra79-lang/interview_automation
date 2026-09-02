@@ -85,21 +85,22 @@ Do not put `sample.wav` directly into a GitHub secret. GitHub secrets are limite
 Create an encrypted voice sample:
 
 ```text
-gpg --symmetric --cipher-algo AES256 voice/sample.wav
+python tools/voice_crypto.py encrypt --input voice/sample.wav --output voice/sample.wav.enc --passphrase-file .local_voice_passphrase.txt --create-passphrase
 ```
 
 This creates:
 
 ```text
-voice/sample.wav.gpg
+voice/sample.wav.enc
+.local_voice_passphrase.txt
 ```
 
-Commit only `voice/sample.wav.gpg`. Never commit `voice/sample.wav`.
+Commit only `voice/sample.wav.enc`. Never commit `voice/sample.wav` or `.local_voice_passphrase.txt`.
 
 Add this repository secret in GitHub:
 
 ```text
-VOICE_SAMPLE_GPG_PASSPHRASE
+VOICE_SAMPLE_PASSPHRASE
 ```
 
 GitHub UI path:
@@ -109,13 +110,13 @@ GitHub UI path:
 Name:
 
 ```text
-VOICE_SAMPLE_GPG_PASSPHRASE
+VOICE_SAMPLE_PASSPHRASE
 ```
 
 Value:
 
 ```text
-the passphrase you typed when creating voice/sample.wav.gpg
+the value inside .local_voice_passphrase.txt
 ```
 
 The workflow decrypts `voice/sample.wav`, downloads/verifies Qwen once, prepares `voice/sample_chatterbox_conds.pt` once, generates the package, and uploads the MP4, thumbnail, script JSON, manifest, and logs as an artifact.

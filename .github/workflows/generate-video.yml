@@ -45,15 +45,15 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Decrypt owned Chatterbox sample voice
         env:
-          VOICE_SAMPLE_GPG_PASSPHRASE: ${{ secrets.VOICE_SAMPLE_GPG_PASSPHRASE }}
+          VOICE_SAMPLE_PASSPHRASE: ${{ secrets.VOICE_SAMPLE_PASSPHRASE }}
         run: |
-          test -n "$VOICE_SAMPLE_GPG_PASSPHRASE"
-          test -f voice/sample.wav.gpg
+          test -n "$VOICE_SAMPLE_PASSPHRASE"
+          test -f voice/sample.wav.enc
           mkdir -p voice
-          gpg --quiet --batch --yes --decrypt \
-            --passphrase "$VOICE_SAMPLE_GPG_PASSPHRASE" \
+          python tools/voice_crypto.py decrypt \
+            --input voice/sample.wav.enc \
             --output voice/sample.wav \
-            voice/sample.wav.gpg
+            --passphrase-env VOICE_SAMPLE_PASSPHRASE
       - name: Download and verify Qwen revision
         run: interview-auto model-setup
       - name: Generate one complete video package
