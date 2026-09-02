@@ -40,3 +40,13 @@ def test_malformed_qwen_json_is_repaired_by_retry(tmp_path) -> None:
     assert script["title"] == "Top 10 LangGraph Interview Questions"
     assert calls["count"] == 2
     assert (tmp_path / "script.raw_attempt_1.txt").exists()
+
+
+def test_short_qwen_narration_is_built_from_generated_questions(tmp_path) -> None:
+    script = generate_script("Top 10 LangGraph Interview Questions", 10, tmp_path / "script.json", fake_qwen_generator)
+    script["narration"] = script["narration"][:4]
+    from interview_automation.script_generation import normalize_script
+
+    normalized = normalize_script(script, "Top 10 LangGraph Interview Questions", 10)
+    assert len(normalized["narration"]) == 12
+    assert normalized["questions"][0]["question"] in normalized["narration"][1]

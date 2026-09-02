@@ -133,18 +133,64 @@ def normalize_script(script: dict[str, Any], topic: str, count: int) -> dict[str
     for index, question in enumerate(questions, start=1):
         question["number"] = index
 
+    title = script.get("title") or topic
     narration = script.get("narration", [])
+    if len(narration) != count + 2:
+        narration = build_narration_from_generated_content(title, questions, count)
+    script["narration"] = narration
+
     if len(narration) != count + 2:
         raise ValueError(f"Expected {count + 2} narration segments, got {len(narration)}.")
 
+    script.setdefault("title", title)
+    script.setdefault(
+        "title_ideas",
+        [title, f"{topic} Interview Preparation", f"{topic} Questions and Answers"],
+    )
+    script.setdefault("audience", "Students and developers preparing for technical interviews.")
+    script.setdefault("difficulty", "intermediate")
+    script.setdefault(
+        "chapters",
+        [{"time": "00:00", "title": "Intro"}]
+        + [{"time": "", "title": f"Q{item['number']}: {item['question']}"} for item in questions],
+    )
+    script.setdefault("description", f"Practice {count} original interview questions with concise sample answers for {topic}.")
+    script.setdefault("tags", [topic, "Interview Questions", "Interview Preparation"])
+    script.setdefault("sources", ["Original educational content"])
+    script.setdefault("thumbnail_text", title[:80])
+
     full = " ".join(
-        [script.get("title", topic)]
+        [script.get("title", title)]
         + [item.get("question", "") + " " + item.get("answer", "") for item in questions]
     )
     script["uniqueness_fingerprint"] = sha256_text(full)
-    script.setdefault("sources", ["Original educational content"])
-    script.setdefault("thumbnail_text", script.get("title", topic)[:80])
     return script
+
+
+def build_narration_from_generated_content(title: str, questions: list[dict[str, Any]], count: int) -> list[str]:
+    narration = [
+        (
+            f"Welcome to {title}. Today we will practice {count} important interview "
+            "questions with clear sample answers, key points, and practical examples."
+        )
+    ]
+    for item in questions:
+        key_points = ", ".join(item.get("key_points", []))
+        example = item.get("example", "")
+        segment = (
+            f"Question {item['number']}. {item['question']} "
+            f"Sample answer. {item['answer']}"
+        )
+        if key_points:
+            segment += f" Key points to cover: {key_points}."
+        if example:
+            segment += f" Example: {example}"
+        narration.append(segment)
+    narration.append(
+        "That completes this interview preparation set. Review each sample answer, "
+        "practice speaking it in your own words, and use the key points to stay clear and confident."
+    )
+    return narration
 
 
 def generate_script(
