@@ -57,12 +57,30 @@ Requirements:
 
 
 def _extract_json(text: str) -> dict[str, Any]:
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    """Return the first complete JSON object in a model response.
+
+    Models occasionally add a short preamble, or include braces in that preamble.
+    Trying every complete, balanced object avoids mistaking those braces for the
+    requested payload.  Malformed JSON is deliberately not guessed or silently
+    repaired here: the same local model receives a focused repair request.
+    """
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
     candidate = match.group(1) if match else text
-    json_text = _find_balanced_json_object(candidate)
-    if not json_text:
-        raise ValueError("Qwen did not return a JSON object.")
-    return json.loads(json_text)
+    errors: list[json.JSONDecodeError] = []
+    for start in (index for index, char in enumerate(candidate) if char == "{"):
+        json_text = _find_balanced_json_object(candidate[start:])
+        if not json_text:
+            continue
+        try:
+            value = json.loads(json_text)
+        except json.JSONDecodeError as exc:
+            errors.append(exc)
+            continue
+        if isinstance(value, dict):
+            return value
+    if errors:
+        raise errors[-1]
+    raise ValueError("Qwen did not return a complete JSON object.")
 
 
 def _find_balanced_json_object(text: str) -> str | None:
@@ -97,10 +115,8 @@ def _find_balanced_json_object(text: str) -> str | None:
 def _call_generator(generator: Callable[..., Any], prompt: str) -> str:
     result = generator(
         prompt,
-        max_new_tokens=8192,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9,
+        max_new_tokens=4096,
+        do_sample=False,
         return_full_text=False,
     )
     if isinstance(result, str):
@@ -129,6 +145,123 @@ If there are more than {count} questions, keep the best {count}. If there are fe
 Broken response:
 {raw}
 """.strip()
+
+
+def build_piece_repair_prompt(topic: str, purpose: str, raw: str, error: Exception) -> str:
+    return f"""
+The following response for {purpose} in an original {topic} interview-preparation
+video is malformed JSON.
+
+JSON error: {error}
+
+Return only one valid JSON object. Preserve the generated educational content,
+but remove markdown, comments, trailing commas, and any prose outside the JSON.
+Do not invent company-specific claims.
+
+Broken response:
+{raw}
+""".strip()
+
+
+def build_metadata_prompt(topic: str, count: int) -> str:
+    return f"""
+Create metadata for an original YouTube interview-preparation video about {topic}.
+Return JSON only with exactly these fields: title, title_ideas, audience,
+difficulty, description, tags, thumbnail_text, sources.
+The video contains {count} questions. Keep language useful and original. Do not
+make company-specific claims or copy another channel. sources must be
+["Original educational content"].
+""".strip()
+
+
+def build_question_batch_prompt(topic: str, start: int, size: int) -> str:
+    end = start + size - 1
+    return f"""
+Create exactly {size} original interview questions for {topic}, numbered {start}
+through {end}. Return JSON only in this shape:
+{{"questions":[{{"number":{start},"question":"...","answer":"...","key_points":["...","...","..."],"example":"..."}}]}}
+Each answer must be 45 to 95 words, spoken, accurate, and useful in an interview.
+Do not use company-specific claims, copied questions, markdown, or comments.
+""".strip()
+
+
+def build_narration_prompt(topic: str, title: str, questions: list[dict[str, Any]]) -> str:
+    question_context = json.dumps(
+        [
+            {
+                "number": item["number"],
+                "question": item["question"],
+                "answer": item["answer"],
+                "key_points": item["key_points"],
+                "example": item["example"],
+            }
+            for item in questions
+        ],
+        ensure_ascii=True,
+    )
+    return f"""
+Write narration for an original interview-preparation video.
+Topic: {topic}
+Title: {title}
+Return JSON only: {{"narration":[...]}}.
+Return exactly {len(questions) + 2} narration strings: a warm opening that welcomes
+the viewer and says they will practise {len(questions)} questions, one spoken
+segment per supplied question in order, then a concise outro. Each question
+segment must include its question and sample answer. Use only these generated
+questions and do not add company-specific claims.
+Questions:
+{question_context}
+""".strip()
+
+
+def _generate_json_piece(
+    generator: Callable[..., Any],
+    prompt: str,
+    topic: str,
+    purpose: str,
+    out_path: Path,
+    validator: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    for attempt in range(1, 5):
+        raw = _call_generator(generator, prompt)
+        raw_path = out_path.with_name(f"{out_path.stem}.{purpose}.raw_attempt_{attempt}.txt")
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(raw, encoding="utf-8")
+        try:
+            payload = _extract_json(raw)
+            if validator:
+                validator(payload)
+            return payload
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"attempt {attempt}: {exc}")
+            prompt = build_piece_repair_prompt(topic, purpose, raw, exc)
+    raise ValueError(f"Qwen failed to produce valid {purpose} JSON. " + " | ".join(errors))
+
+
+def validate_metadata_payload(payload: dict[str, Any]) -> None:
+    for field in ("title", "audience", "difficulty", "description", "thumbnail_text"):
+        require_text(payload.get(field), f"metadata {field}")
+    for field in ("title_ideas", "tags", "sources"):
+        if not coerce_string_list(payload.get(field)):
+            raise ValueError(f"Missing generated metadata {field}.")
+
+
+def validate_question_batch_payload(payload: dict[str, Any], start: int, size: int) -> None:
+    expected_numbers = list(range(start, start + size))
+    questions = coerce_questions(payload.get("questions"))
+    selected = [item for item in questions if item.get("number") in expected_numbers]
+    if [item.get("number") for item in selected] != expected_numbers:
+        raise ValueError(f"Expected numbered questions {expected_numbers}, got {[item.get('number') for item in selected]}.")
+    for item in selected:
+        require_text(item.get("question"), f"question {item['number']}")
+        require_text(item.get("answer"), f"answer {item['number']}")
+
+
+def validate_narration_payload(payload: dict[str, Any], count: int) -> None:
+    narration = coerce_string_list(payload.get("narration"))
+    if len(narration) != count + 2:
+        raise ValueError(f"Expected {count + 2} narration segments, got {len(narration)}.")
 
 
 def normalize_script(script: dict[str, Any], topic: str, count: int) -> dict[str, Any]:
@@ -252,20 +385,64 @@ def generate_script(
 ) -> dict[str, Any]:
     if generator is None:
         raise RuntimeError("Script generation requires the local Qwen2.5-1.5B-Instruct generator.")
-    prompt = build_script_prompt(topic, count)
-    errors: list[str] = []
-    raw = ""
-    for attempt in range(1, 5):
-        raw = _call_generator(generator, prompt)
-        raw_path = out_path.with_name(f"{out_path.stem}.raw_attempt_{attempt}.txt")
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_path.write_text(raw, encoding="utf-8")
-        try:
-            script = normalize_script(_extract_json(raw), topic, count)
-            write_json(out_path, script)
-            return script
-        except (json.JSONDecodeError, ValueError) as exc:
-            errors.append(f"attempt {attempt}: {exc}")
-            prompt = build_repair_prompt(topic, count, raw, exc)
+    # Small deterministic model calls are substantially more reliable than one
+    # response containing duplicated answers in questions, narration, chapters,
+    # and metadata. Every educational word still originates with local Qwen.
+    metadata = _generate_json_piece(
+        generator,
+        build_metadata_prompt(topic, count),
+        topic,
+        "metadata",
+        out_path,
+        validate_metadata_payload,
+    )
 
-    raise ValueError("Qwen failed to produce valid script JSON after repair attempts. " + " | ".join(errors))
+    questions: list[dict[str, Any]] = []
+    batch_size = 3
+    for start in range(1, count + 1, batch_size):
+        size = min(batch_size, count - start + 1)
+        batch = _generate_json_piece(
+            generator,
+            build_question_batch_prompt(topic, start, size),
+            topic,
+            f"questions_{start:02d}_{start + size - 1:02d}",
+            out_path,
+            lambda payload, batch_start=start, batch_size=size: validate_question_batch_payload(
+                payload, batch_start, batch_size
+            ),
+        )
+        generated_questions = [
+            item
+            for item in coerce_questions(batch.get("questions"))
+            if item.get("number") in range(start, start + size)
+        ]
+        if len(generated_questions) != size:
+            raise ValueError(
+                f"Qwen returned {len(generated_questions)} questions for batch {start}-{start + size - 1}; expected {size}."
+            )
+        questions.extend(generated_questions)
+
+    preliminary = normalize_script(
+        {**metadata, "questions": questions, "narration": ["pending"] * (count + 2)},
+        topic,
+        count,
+    )
+    narration_payload = _generate_json_piece(
+        generator,
+        build_narration_prompt(topic, preliminary["title"], preliminary["questions"]),
+        topic,
+        "narration",
+        out_path,
+        lambda payload: validate_narration_payload(payload, count),
+    )
+    narration = coerce_string_list(narration_payload.get("narration"))
+    if len(narration) != count + 2:
+        raise ValueError(
+            f"Qwen returned {len(narration)} narration segments; expected {count + 2}."
+        )
+
+    script = normalize_script(
+        {**metadata, "questions": questions, "narration": narration}, topic, count
+    )
+    write_json(out_path, script)
+    return script

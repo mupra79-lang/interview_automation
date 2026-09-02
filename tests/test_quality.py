@@ -38,8 +38,11 @@ def test_malformed_qwen_json_is_repaired_by_retry(tmp_path) -> None:
 
     script = generate_script("Top 10 LangGraph Interview Questions", 10, tmp_path / "script.json", flaky_generator)
     assert script["title"] == "Top 10 LangGraph Interview Questions"
-    assert calls["count"] == 2
-    assert (tmp_path / "script.raw_attempt_1.txt").exists()
+    # Generation is intentionally chunked into metadata, question batches, and
+    # narration, so a malformed first response is repaired without poisoning
+    # the rest of the generated video package.
+    assert calls["count"] >= 2
+    assert (tmp_path / "script.metadata.raw_attempt_1.txt").exists()
 
 
 def test_short_qwen_narration_is_built_from_generated_questions(tmp_path) -> None:
