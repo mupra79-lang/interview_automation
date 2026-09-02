@@ -1,0 +1,71 @@
+name: Generate Interview Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Video topic"
+        required: true
+        default: "Top 10 LangGraph Interview Questions"
+      questions:
+        description: "Question count"
+        required: true
+        type: choice
+        options:
+          - "10"
+          - "20"
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      HF_HOME: ~/.cache/huggingface
+      CHATTERBOX_VOICE_SAMPLE: voice/sample.wav
+      CHATTERBOX_VOICE_PROFILE: voice/sample_chatterbox_conds.pt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Cache Hugging Face and local models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            models
+            voice/sample_chatterbox_conds.pt
+          key: qwen-chatterbox-${{ runner.os }}-${{ hashFiles('models/qwen2_5_1_5b_instruct.lock.json') }}
+          restore-keys: |
+            qwen-chatterbox-${{ runner.os }}-
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - name: Decrypt owned Chatterbox sample voice
+        env:
+          VOICE_SAMPLE_GPG_PASSPHRASE: ${{ secrets.VOICE_SAMPLE_GPG_PASSPHRASE }}
+        run: |
+          test -n "$VOICE_SAMPLE_GPG_PASSPHRASE"
+          test -f voice/sample.wav.gpg
+          mkdir -p voice
+          gpg --quiet --batch --yes --decrypt \
+            --passphrase "$VOICE_SAMPLE_GPG_PASSPHRASE" \
+            --output voice/sample.wav \
+            voice/sample.wav.gpg
+      - name: Download and verify Qwen revision
+        run: interview-auto model-setup
+      - name: Generate one complete video package
+        run: interview-auto dry-run --topic "${{ inputs.topic }}" --questions "${{ inputs.questions }}" --keep-intermediate
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: interview-video-package
+          path: |
+            runs/**/final.mp4
+            runs/**/thumbnail.png
+            runs/**/script.json
+            runs/**/manifest.json
+            runs/**/pipeline.log
+            runs/**/validation_report.json

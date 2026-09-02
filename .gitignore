@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.example
+
+# Secrets and OAuth
+client_secret*.json
+token*.json
+*.pem
+*.key
+
+# Generated state and heavy files
+runs/
+cache/
+models/
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.mp3
+*.pt
+*.safetensors
+*.bin
