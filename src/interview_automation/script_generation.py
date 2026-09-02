@@ -22,6 +22,9 @@ Requirements:
 - Do not invent private YouTube metrics, exact 24-hour views, or historical channel averages.
 - Include a strong opening narration that starts after the viewer clicks the video, welcomes them, names the topic, and promises {count} practical questions with sample answers.
 - Make every answer concise, spoken, useful, and interview-ready.
+- Generate exactly {count} question objects, numbered 1 to {count}.
+- Generate exactly {count + 2} narration strings: opening, one segment for each question, and outro.
+- Keep every answer between 45 and 95 words so it fits video slides.
 - Use beginner-to-intermediate clarity with practical examples where useful.
 - Return exactly this schema:
 {{
@@ -94,7 +97,7 @@ def _find_balanced_json_object(text: str) -> str | None:
 def _call_generator(generator: Callable[..., Any], prompt: str) -> str:
     result = generator(
         prompt,
-        max_new_tokens=4096,
+        max_new_tokens=8192,
         do_sample=True,
         temperature=0.7,
         top_p=0.9,
@@ -120,6 +123,8 @@ JSON error: {error}
 
 Fix the response below into valid JSON only. Do not add markdown, comments, explanations, or extra text.
 Preserve the original meaning, keep exactly {count} questions, and keep exactly {count + 2} narration segments.
+If metadata is missing, add suitable original metadata. If narration is missing, create narration from the existing questions and answers.
+If there are more than {count} questions, keep the best {count}. If there are fewer than {count}, add original questions for the same topic.
 
 Broken response:
 {raw}
@@ -127,14 +132,23 @@ Broken response:
 
 
 def normalize_script(script: dict[str, Any], topic: str, count: int) -> dict[str, Any]:
-    questions = script.get("questions", [])
+    questions = coerce_questions(script.get("questions", []))
+    if len(questions) > count:
+        questions = questions[:count]
     if len(questions) != count:
         raise ValueError(f"Expected {count} questions from Qwen, got {len(questions)}.")
     for index, question in enumerate(questions, start=1):
         question["number"] = index
+        question["question"] = require_text(question.get("question"), f"question {index}")
+        question["answer"] = require_text(question.get("answer"), f"answer {index}")
+        question["key_points"] = coerce_string_list(question.get("key_points"))[:5]
+        if not question["key_points"]:
+            question["key_points"] = infer_key_points(question["answer"])
+        question["example"] = str(question.get("example") or "").strip()
+    script["questions"] = questions
 
-    title = script.get("title") or topic
-    narration = script.get("narration", [])
+    title = str(script.get("title") or topic).strip()
+    narration = coerce_string_list(script.get("narration", []))
     if len(narration) != count + 2:
         narration = build_narration_from_generated_content(title, questions, count)
     script["narration"] = narration
@@ -142,22 +156,23 @@ def normalize_script(script: dict[str, Any], topic: str, count: int) -> dict[str
     if len(narration) != count + 2:
         raise ValueError(f"Expected {count + 2} narration segments, got {len(narration)}.")
 
-    script.setdefault("title", title)
-    script.setdefault(
-        "title_ideas",
-        [title, f"{topic} Interview Preparation", f"{topic} Questions and Answers"],
-    )
-    script.setdefault("audience", "Students and developers preparing for technical interviews.")
-    script.setdefault("difficulty", "intermediate")
-    script.setdefault(
-        "chapters",
+    script["title"] = title
+    title_ideas = coerce_string_list(script.get("title_ideas"))
+    script["title_ideas"] = (title_ideas + [title, f"{topic} Interview Preparation", f"{topic} Questions and Answers"])[:3]
+    script["audience"] = str(script.get("audience") or "Students and developers preparing for technical interviews.").strip()
+    difficulty = str(script.get("difficulty") or "intermediate").strip().lower()
+    script["difficulty"] = difficulty if difficulty in {"beginner", "intermediate", "advanced"} else "intermediate"
+    chapters = script.get("chapters")
+    script["chapters"] = chapters if isinstance(chapters, list) and chapters else (
         [{"time": "00:00", "title": "Intro"}]
-        + [{"time": "", "title": f"Q{item['number']}: {item['question']}"} for item in questions],
+        + [{"time": "", "title": f"Q{item['number']}: {item['question']}"} for item in questions]
     )
-    script.setdefault("description", f"Practice {count} original interview questions with concise sample answers for {topic}.")
-    script.setdefault("tags", [topic, "Interview Questions", "Interview Preparation"])
-    script.setdefault("sources", ["Original educational content"])
-    script.setdefault("thumbnail_text", title[:80])
+    script["description"] = str(script.get("description") or f"Practice {count} original interview questions with concise sample answers for {topic}.").strip()
+    tags = coerce_string_list(script.get("tags"))
+    script["tags"] = (tags + [topic, "Interview Questions", "Interview Preparation"])[:12]
+    sources = coerce_string_list(script.get("sources"))
+    script["sources"] = sources or ["Original educational content"]
+    script["thumbnail_text"] = str(script.get("thumbnail_text") or title[:80]).strip()
 
     full = " ".join(
         [script.get("title", title)]
@@ -165,6 +180,42 @@ def normalize_script(script: dict[str, Any], topic: str, count: int) -> dict[str
     )
     script["uniqueness_fingerprint"] = sha256_text(full)
     return script
+
+
+def coerce_questions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def coerce_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def require_text(value: Any, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"Missing generated {label}.")
+    return text
+
+
+def infer_key_points(answer: str) -> list[str]:
+    words = [
+        word.strip(".,:;!?()[]{}").lower()
+        for word in answer.split()
+        if len(word.strip(".,:;!?()[]{}")) > 5
+    ]
+    seen: list[str] = []
+    for word in words:
+        if word not in seen:
+            seen.append(word)
+        if len(seen) == 3:
+            break
+    return seen or ["definition", "use case", "interview framing"]
 
 
 def build_narration_from_generated_content(title: str, questions: list[dict[str, Any]], count: int) -> list[str]:
@@ -204,7 +255,7 @@ def generate_script(
     prompt = build_script_prompt(topic, count)
     errors: list[str] = []
     raw = ""
-    for attempt in range(1, 4):
+    for attempt in range(1, 5):
         raw = _call_generator(generator, prompt)
         raw_path = out_path.with_name(f"{out_path.stem}.raw_attempt_{attempt}.txt")
         raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,4 +268,4 @@ def generate_script(
             errors.append(f"attempt {attempt}: {exc}")
             prompt = build_repair_prompt(topic, count, raw, exc)
 
-    raise ValueError("Qwen failed to produce valid script JSON. " + " | ".join(errors))
+    raise ValueError("Qwen failed to produce valid script JSON after repair attempts. " + " | ".join(errors))

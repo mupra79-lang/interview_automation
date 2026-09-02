@@ -59,13 +59,20 @@ jobs:
       - name: Generate one complete video package
         run: interview-auto dry-run --topic "${{ inputs.topic }}" --questions "${{ inputs.questions }}" --keep-intermediate
       - name: Upload package artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: interview-video-package
+          if-no-files-found: warn
           path: |
             runs/**/final.mp4
             runs/**/thumbnail.png
             runs/**/script.json
+            runs/**/*.raw_attempt_*.txt
             runs/**/manifest.json
             runs/**/pipeline.log
+            runs/**/checkpoint.json
+            runs/**/quality_report.json
             runs/**/validation_report.json
+            runs/**/audio_manifest.json
+            runs/**/slides_manifest.json

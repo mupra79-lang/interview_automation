@@ -50,3 +50,21 @@ def test_short_qwen_narration_is_built_from_generated_questions(tmp_path) -> Non
     normalized = normalize_script(script, "Top 10 LangGraph Interview Questions", 10)
     assert len(normalized["narration"]) == 12
     assert normalized["questions"][0]["question"] in normalized["narration"][1]
+
+
+def test_extra_qwen_questions_are_trimmed_and_metadata_is_filled(tmp_path) -> None:
+    from interview_automation.script_generation import normalize_script
+
+    script = fake_qwen_generator("")[0]["generated_text"]
+    import json
+
+    data = json.loads(script)
+    data["questions"].append(data["questions"][0].copy())
+    data.pop("tags")
+    data.pop("title_ideas")
+    data["narration"] = []
+    normalized = normalize_script(data, "Top 10 LangGraph Interview Questions", 10)
+    assert len(normalized["questions"]) == 10
+    assert len(normalized["title_ideas"]) == 3
+    assert normalized["tags"]
+    assert len(normalized["narration"]) == 12
