@@ -25,6 +25,20 @@ jobs:
       CHATTERBOX_VOICE_PROFILE: voice/sample_chatterbox_conds.pt
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          clean: true
+          fetch-depth: 1
+      - name: Show checked out automation version
+        run: |
+          git rev-parse HEAD
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("src/interview_automation/script_generation.py")
+          lines = p.read_text(encoding="utf-8").splitlines()
+          for i in range(58, 67):
+              print(f"{i + 1}: {lines[i]}")
+          PY
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
